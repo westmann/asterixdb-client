@@ -1,0 +1,19 @@
+<project>
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>edu.uci.ics.asterix.client</groupId>
+  <artifactId>AsterixQueryClient</artifactId>
+  <version>1</version>
+  
+  <dependencies>
+    <dependency>
+      <groupId>org.apache.httpcomponents</groupId>
+      <artifactId>httpclient</artifactId>
+      <version>4.2.5</version>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-core</artifactId>
+      <version>2.2.2</version>
+    </dependency>
+  </dependencies>
+</project>
