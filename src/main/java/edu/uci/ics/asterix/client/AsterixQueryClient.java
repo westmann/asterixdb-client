@@ -6,6 +6,7 @@ import java.io.FileReader;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.net.URI;
+import java.util.ArrayList;
 
 import org.apache.http.HttpEntity;
 import org.apache.http.HttpResponse;
@@ -101,7 +102,10 @@ public class AsterixQueryClient {
                     if(resultsPw != null){  //saving parsed results (all the returned records for the query) in results file
                         String parsedResults = parseResults(content);
                         resultsPw.println("Results for "+qFiles[ix].getName()+" in iteration "+t);
+                        System.out.println("Results for "+qFiles[ix].getName()+" in iteration "+t);
                         resultsPw.println(parsedResults);
+                        resultsPw.flush();
+                        System.out.println(parsedResults);
                     }
                         //consuming content of HttpResponse, clearing it and making it ready for next query
                     EntityUtils.consume( response.getEntity() );
@@ -122,7 +126,22 @@ public class AsterixQueryClient {
     private static File[] getQueryFiles(String dirPath){
          File folder = new File(dirPath);
          File[] listOfFiles = folder.listFiles();
-         return listOfFiles;
+         ArrayList<File> arrayListOfQueries = new ArrayList<File>();
+         File[] listOfQueries;
+         for (File f : listOfFiles) {
+        	 String path = f.getPath();
+        	 String[] pathElements = path.split("/");
+        	 String fileName = pathElements[pathElements.length - 1];
+        	 if (!fileName.startsWith(".")) {
+        		 arrayListOfQueries.add(f);
+        	 }
+         }
+         listOfQueries = new File[arrayListOfQueries.size()];
+         System.out.println(listOfQueries.length);
+         for (int i = 0; i < arrayListOfQueries.size(); i++) {
+        	 listOfQueries[i] = arrayListOfQueries.get(i);
+         }
+         return listOfQueries;
     }
     
     private static int getResultsSize(String content){
