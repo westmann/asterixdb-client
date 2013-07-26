@@ -13,7 +13,6 @@ import java.nio.file.Path;
 
 import org.apache.http.HttpEntity;
 import org.apache.http.HttpResponse;
-import org.apache.http.client.HttpClient;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.client.utils.URIBuilder;
 import org.apache.http.impl.client.DefaultHttpClient;
@@ -25,9 +24,18 @@ import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.core.JsonToken;
 
 public class AsterixQueryClient {
+	final static String DDL_FILES_SUFFIX = ".ddl";
+	final static String UPDATE_FILES_SUFFIX = ".update";
+	
+	static URIBuilder readOnlybuilder = null;
+	static URIBuilder updatebuilder = null;
+	static URIBuilder ddlbuilder = null;
+	static HttpGet httpGet = null;
+	static DefaultHttpClient httpclient = null;
+	
     public static void main(String args[]){
         if(args.length != 5 && args.length != 7){
-            System.out.println("Wrong argu;ments. If validation of results is not desired, please use it as:\nargs[0]:CC Url" +
+            System.out.println("Wrong arguments. If validation of results is not desired, please use it as:\nargs[0]:CC Url" +
                                 "\nargs[1]: number of iterations (to run query suite)\n" +
                                 "args[2]:Path of the directory,containing query files\n" +
                                 "args[3]:Path for the file to save benchmarking stats\n" +
@@ -70,18 +78,17 @@ public class AsterixQueryClient {
             e.printStackTrace();
         }
         
-        URIBuilder builder = null;
-        HttpClient httpclient = null;
-        HttpGet httpGet = null;
         PrintWriter statsPw = null;
         PrintWriter resultsPw = null;
         try {
-            builder = new URIBuilder("http://"+ccUrl+":19002/query");;
+        	readOnlybuilder = new URIBuilder("http://"+ccUrl+":19002/query");
+        	updatebuilder = new URIBuilder("http://"+ccUrl+":19002/update");
+        	ddlbuilder = new URIBuilder("http://"+ccUrl+":19002/ddl");
             httpclient = new DefaultHttpClient();
             httpGet = new HttpGet();
             statsPw = new PrintWriter(statFile);
             statsPw.println("Iteration\tQuery-File\tTime(ms)\tResults-count");
-            if(resultsDumpFile != null){
+            if(resultsDumpFile != null && !resultsDumpFile.equals("null")){
                 resultsPw = new PrintWriter(resultsDumpFile);
             }
         } catch (Exception e) {
@@ -94,45 +101,40 @@ public class AsterixQueryClient {
                 int ix = 0;
                 System.out.println("Running queries in iteration "+t);
                 for(String nxq : qTexts){
-                        //Preparing the query
-                    builder.setParameter("query", nxq);
-                    URI uri = builder.build();
-                    httpGet.setURI(uri);
-                        //Running & Measuring Time 
-                    long s = System.currentTimeMillis();
-                    HttpResponse response = httpclient.execute(httpGet);
-                    long e = System.currentTimeMillis();
-                    long duration = e-s;
-                        //Parsing the results & extracting cardinality & returned records
-                    HttpEntity entity = response.getEntity();
-                    String content = EntityUtils.toString(entity);
-                    int resSize = getResultsSize(content);
-                    if(resSize < 0){
-                        System.err.println(qFiles[ix].getName()+" in iterattion "+t+" returned invalid results.\n");
-                    }
-                    statsPw.println(t+"\t"+qFiles[ix].getName()+"\t"+duration+"\t"+resSize);    //saving time/cardinality stats in stats file
-                    if(resultsPw != null){  //saving parsed results (all the returned records for the query) in results file
-                        String parsedResults = parseResults(content);
-                        resultsPw.println("Results for "+qFiles[ix].getName()+" in iteration "+t);
-                        resultsPw.println(parsedResults);
-                        resultsPw.flush();
-                    }
-                    
-                    if (optionVSupplied == true) {  //checking if query results match correct results
-                    	File answerFile = getAnswerFileForQuery(qFiles[ix], answersDir);
-                    	if (answerFile == null) {
-                    		missingAnswersFiles = true;
-                    		System.out.println("Correct results for " + qFiles[ix].getName() + " not in directory " + answersDir);
-                    	} else if (!resultsAreValid(parseResults(content), getFileText(getAnswerFileForQuery(qFiles[ix], answersDir)))) {
-                    		allResultsValid = false;
-                    		System.out.println("Results for " + qFiles[ix].getName() + " in iteration " + t + " are INVALID.");
-                    	} else {
-                    		System.out.println("Results for " + qFiles[ix].getName() + " in iteration " + t + " are VALID.");
-                    	}
-                    }
-                    
-                        //consuming content of HttpResponse, clearing it and making it ready for next query
-                    EntityUtils.consume( response.getEntity() );
+                	String queryFileName = qFiles[ix].getName();
+                	if(isDDL(queryFileName)){
+                		Stats stat = runDDL(nxq);
+                		statsPw.println(t+"\t"+queryFileName+"\t"+stat.getTime());
+                	} else if(isUpdate(queryFileName)){
+                		Stats stat = runUpdateQuery(nxq);
+                		statsPw.println(t+"\t"+queryFileName+"\t"+stat.getTime());
+                	} else {
+                		Stats stat = runReadOnlyQuery(nxq);
+                        if(stat.getCount() < 0){
+                            System.err.println(qFiles[ix].getName()+" in iterattion "+t+" returned invalid results.\n");
+                            System.err.println(stat.getContent());
+                        }
+                        statsPw.println(t+"\t"+queryFileName+"\t"+stat.getTime()+"\t"+stat.getCount());    //saving time/cardinality stats in stats file
+                        if(resultsPw != null && (stat.getCount()> -1)){  //saving parsed results (all the returned records for the query) in results file
+                            String parsedResults = parseResults(stat.getContent());
+                            resultsPw.println("Results for "+queryFileName+" in iteration "+t);
+                            resultsPw.println(parsedResults);
+                            resultsPw.flush();
+                        }
+                        
+                        if (optionVSupplied == true) {  //checking if query results match correct results
+                        	File answerFile = getAnswerFileForQuery(qFiles[ix], answersDir);
+                        	if (answerFile == null) {
+                        		missingAnswersFiles = true;
+                        		System.out.println("Correct results for " + queryFileName + " not in directory " + answersDir);
+                        	} else if (!resultsAreValid(parseResults(stat.getContent()), getFileText(getAnswerFileForQuery(qFiles[ix], answersDir)))) {
+                        		allResultsValid = false;
+                        		System.out.println("Results for " + queryFileName + " in iteration " + t + " are INVALID.");
+                        	} else {
+                        		System.out.println("Results for " + queryFileName + " in iteration " + t + " are VALID.");
+                        	}
+                        }
+                	}
                     ix++;
                 }
                 
@@ -150,7 +152,6 @@ public class AsterixQueryClient {
                 		}
                 	}
                 }
-                
             }
         } catch (Exception e) {
             System.err.println("Problem in query execution, stats dumping, or retrieving correct results files.");
@@ -179,6 +180,51 @@ public class AsterixQueryClient {
         	 listOfQueries[i] = arrayListOfQueries.get(i);
          }
          return listOfQueries;
+    }
+    
+    private static Stats runReadOnlyQuery(String qTxt) throws Exception{
+    	 	//Preparing the query
+    	readOnlybuilder.setParameter("query", qTxt);
+		URI uri = readOnlybuilder.build();
+		httpGet.setURI(uri);
+			//Running & Measuring Time
+		long s = System.currentTimeMillis();
+		HttpResponse response = httpclient.execute(httpGet);
+		HttpEntity entity = response.getEntity();
+		String content = EntityUtils.toString(entity);
+		EntityUtils.consume(entity);			//consuming content of HttpResponse, clearing it and making it ready for next query
+		long e = System.currentTimeMillis();
+		long clientTime = (e-s);
+        int resSize = getResultsSize(content);
+		return new Stats(clientTime, resSize, content);
+	}
+    
+    private static Stats runUpdateQuery(String qTxt) throws Exception{
+    	updatebuilder.setParameter("statements", qTxt);
+		URI uri = updatebuilder.build();
+		httpGet.setURI(uri);
+		long s = System.currentTimeMillis();
+		HttpResponse response = httpclient.execute(httpGet);
+		HttpEntity entity = response.getEntity();
+		String content = EntityUtils.toString(entity);
+		EntityUtils.consume( entity );
+		long e = System.currentTimeMillis();
+		long clientTime = (e-s);
+		return new Stats(clientTime, -1, content);	//Update queries do not have results coming back
+    }
+    
+    private static Stats runDDL(String qTxt) throws Exception{
+    	ddlbuilder.setParameter("ddl", qTxt);
+		URI uri = ddlbuilder.build();
+		httpGet.setURI(uri);
+		long s = System.currentTimeMillis();
+		HttpResponse response = httpclient.execute(httpGet);
+		HttpEntity entity = response.getEntity();
+		String content = EntityUtils.toString(entity);
+		EntityUtils.consume( entity );
+		long e = System.currentTimeMillis();
+		long clientTime = (e-s);
+		return new Stats(clientTime, -1, content);	//Update queries do not have results coming back
     }
     
     private static int getResultsSize(String content){
@@ -246,6 +292,19 @@ public class AsterixQueryClient {
             e.printStackTrace();
         }
         return (sb.toString());
+    }
+    
+    /**
+     * 
+     * @param fileName: the file, containing AQL statements
+     * @return true if file is expected to contain DDL or DML statements
+     */
+    private static boolean isDDL(String fileName){
+    	return fileName.endsWith(DDL_FILES_SUFFIX); 
+    }
+    
+    private static boolean isUpdate(String fileName){
+    	return fileName.endsWith(UPDATE_FILES_SUFFIX);
     }
     
     /**
@@ -420,5 +479,28 @@ public class AsterixQueryClient {
 		*/
 		return differenceWithinTolerance;
     }
-    
+}
+
+class Stats {
+	private long time;
+	private int count;
+	private String content;
+	
+	public Stats(long time, int count, String content){
+		this.time = time;
+		this.count =count;
+		this.content = content;
+	}
+	
+	public long getTime() {
+		return time;
+	}
+
+	public int getCount() {
+		return count;
+	}
+
+	public String getContent() {
+		return content;
+	}
 }
